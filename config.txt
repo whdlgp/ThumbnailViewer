@@ -1,0 +1,6 @@
+search_dir=I:\TEST\TEST_DIR
+img_exts=png,jpg,webp,jpeg
+# Possible values for 'theme': light, dark, auto
+theme=dark
+default_res=1280x720
+thumb_size=200
