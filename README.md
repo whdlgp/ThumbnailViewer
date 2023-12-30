@@ -6,7 +6,7 @@
 
   
 
-* Generate GUI code
+  * Generate GUI code
 
   
 
@@ -14,7 +14,7 @@
 
   
 
-* searching image files, listing files and directories
+  * searching image files, listing files and directories
 
   
 
