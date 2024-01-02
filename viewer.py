@@ -10,6 +10,7 @@ import qdarktheme
 from pathlib import Path
 import subprocess
 import json
+from datetime import datetime, timezone
 
 # Thumbnail file directory
 thumb_dir = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
@@ -127,39 +128,43 @@ class ThumbnailList():
 
         self.thumb_dir_list = thumb_dir_list
 
+
 # Initialize the local thumbnail list from the file
 thumbnail_list = ThumbnailList()
 
-# Clickable label class for handling double-click events
-class ClickableLabel(QLabel):
-    def __init__(self, text=None, directory=None, is_thumbnail=False, parent=None):
-        if text is not None:
-            super(ClickableLabel, self).__init__(text, parent)
-        else:
-            super(ClickableLabel, self).__init__(parent)
-        self.directory = directory
-        self.is_thumbnail = is_thumbnail
+# Clickable Thumbnail Image class for handling double-click events
+class ClickableDirName(QLabel):
+    def __init__(self, dir_fullpath=None, parent=None):
+        super(ClickableDirName, self).__init__(parent)
+        self.directory = dir_fullpath
 
     def mouseDoubleClickEvent(self, event):
         # Double-click event handling
-        if self.is_thumbnail:
-            file_dialog = QFileDialog()
-            file_dialog.setFileMode(QFileDialog.ExistingFile)
-            file_dialog.setNameFilter("Images (*.png *.jpg *.webp *.jpeg);;All Files (*)")
+        subprocess.Popen(["explorer", str(self.directory)])
 
-            if self.directory is not None:
-                file_dialog.setDirectory(str(self.directory))
 
-            if file_dialog.exec_():
-                selected_file = file_dialog.selectedFiles()[0]
-                self.change_thumbnail(selected_file)
-        else:
-            subprocess.Popen(["explorer", str(self.directory)])
+# Clickable Directory Name class for handling double-click events
+class ClickableThumbnail(QLabel):
+    def __init__(self, directory=None, parent=None):
+        super(ClickableThumbnail, self).__init__(parent)
+        self.directory = directory
+
+    def mouseDoubleClickEvent(self, event):
+        # Double-click event handling
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.ExistingFile)
+        file_dialog.setNameFilter("Images (*.png *.jpg *.webp *.jpeg);;All Files (*)")
+
+        if self.directory is not None:
+            file_dialog.setDirectory(str(self.directory))
+
+        if file_dialog.exec_():
+            selected_file = file_dialog.selectedFiles()[0]
+            self.change_thumbnail(selected_file)
 
     def change_thumbnail(self, new_image_path):
         # Change the thumbnail with the selected image
-        pixmap = self.get_thumbnail(Path(new_image_path))
-        self.setPixmap(pixmap)
+        self.get_thumbnail(Path(new_image_path))
 
         # Save the updated thumbnail information to the local list
         thumbnail_list.change_thumb(self.directory, new_image_path)
@@ -170,12 +175,15 @@ class ClickableLabel(QLabel):
             thumbnail_path_str = str(thumbnail_path)
             pixmap = QPixmap(thumbnail_path_str)
             pixmap = pixmap.scaled(thumb_size, thumb_size, Qt.KeepAspectRatio)
+            self.setPixmap(pixmap)
             return pixmap
         else:
             # Create and return a "No image" pixmap
             no_image_pixmap = QPixmap(thumb_size, thumb_size)
             no_image_pixmap.fill(Qt.gray)
+            self.setPixmap(no_image_pixmap)
             return no_image_pixmap
+
 
 # Main application window
 class ThumbnailViewerApp(QMainWindow):
@@ -186,13 +194,6 @@ class ThumbnailViewerApp(QMainWindow):
         thumb_dir.mkdir(exist_ok=True)
 
         self.init_ui()
-    
-    def center(self):
-        # Center the main window on the screen
-        qr = self.frameGeometry()
-        cp = QDesktopWidget().availableGeometry().center()
-        qr.moveCenter(cp)
-        self.move(qr.topLeft())
 
     def init_ui(self):
         # Initialize the user interface
@@ -211,8 +212,13 @@ class ThumbnailViewerApp(QMainWindow):
 
         # Create a tree widget for displaying thumbnails and names
         self.tree = QTreeWidget(self.central_widget)
-        self.tree.setHeaderLabels(["Thumbnail", "Name"])
+        self.tree.setHeaderLabels(["Thumbnail", "Name", "modified"])
         self.tree.setColumnWidth(0, thumb_size + 50)
+        self.tree.setColumnWidth(1, thumb_size + 50)
+
+        # Set initial sorting
+        self.tree.setSortingEnabled(True)
+        self.tree.sortItems(2, Qt.DescendingOrder)  # Sort by the "modified" column in Descending order
 
         # Populate the tree with existing thumbnail information
         for directory in thumbnail_list.thumb_dir_list:
@@ -221,15 +227,20 @@ class ThumbnailViewerApp(QMainWindow):
             item = QTreeWidgetItem(self.tree)
 
             # Add the thumbnail image to the tree widget
-            thumbnail_item = ClickableLabel(None, directory, is_thumbnail=True)
-            pixmap = thumbnail_item.get_thumbnail(thumbnail_path)
-            if pixmap:
-                thumbnail_item.setPixmap(pixmap)
+            thumbnail_item = ClickableThumbnail(directory)
+            thumbnail_item.get_thumbnail(thumbnail_path)
             self.tree.setItemWidget(item, 0, thumbnail_item)
 
             # Add the directory name to the tree widget
-            name_item = ClickableLabel(directory.name, directory, is_thumbnail=False)
+            name_item = ClickableDirName(directory)
+            item.setText(1, directory.name)
+            name_item.setWordWrap(True)
             self.tree.setItemWidget(item, 1, name_item)
+
+            # Add the modified date time to the tree widget
+            birth_time = directory.stat().st_mtime
+            birth_time_str = datetime.fromtimestamp(birth_time).strftime('%Y-%m-%d %H:%M')
+            item.setText(2, birth_time_str)
 
         # Add labels for displaying images
         self.image_label = QLabel(self.central_widget)
@@ -256,26 +267,24 @@ class ThumbnailViewerApp(QMainWindow):
         layout = QVBoxLayout(self.central_widget)
         layout.addWidget(self.search_widget)
         layout.addWidget(groupBox)
+        
+        # Connect the itemClicked signal of the tree widget to the show_large_image method
+        self.tree.itemClicked.connect(self.show_large_image)
 
         # Set the initial window size
         self.resize(default_res[0], default_res[1])
+        # Set window to center
         qr = self.frameGeometry()
         cp = QDesktopWidget().availableGeometry().center()
         qr.moveCenter(cp)
         self.move(qr.topLeft())
 
-        # Connect the itemClicked signal of the tree widget to the show_large_image method
-        self.tree.itemClicked.connect(self.show_large_image)
-
     def show_large_image(self, item, column):
         # Display the large thumbnail image when a directory item is clicked
         thumbnail_item = self.tree.itemWidget(item, 0)
         directory = thumbnail_item.directory
-
         thumbnail_path = thumbnail_list.thumb_dir_list[Path(directory).resolve()]
-        self.display_large_image(thumbnail_path)
-
-    def display_large_image(self, thumbnail_path):
+        
         # Display the thumbnail image in the QGraphicsScene
         self.scene.clear()  # Clear the previous image
 
@@ -290,7 +299,6 @@ class ThumbnailViewerApp(QMainWindow):
         search_text = self.search_widget.text().lower()
         for row in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(row)
-            thumbnail_item = self.tree.itemWidget(item, 0)
             name_item = self.tree.itemWidget(item, 1)
 
             # Check if the search text is in the directory name or file name
