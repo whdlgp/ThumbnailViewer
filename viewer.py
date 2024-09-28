@@ -2,9 +2,9 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QTreeWidget, QTreeWidgetItem, QLabel,
     QDesktopWidget, QHBoxLayout, QVBoxLayout, QGroupBox,
-    QFileDialog, QMainWindow, QGraphicsScene, QGraphicsView, QLineEdit
+    QFileDialog, QMainWindow, QGraphicsScene, QGraphicsView, QLineEdit, QPushButton
 )
-from PyQt5.QtGui import QPixmap, QPainter
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt
 import qdarktheme
 from pathlib import Path
@@ -12,6 +12,7 @@ import subprocess
 import json
 from PIL import Image
 from datetime import datetime
+import time
 
 # Thumbnail file directory
 thumb_dir = Path(sys.executable).parent / "thumbnails" if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent / "thumbnails"
@@ -68,14 +69,8 @@ class ThumbnailList:
         self.update_thumbnails()
 
     def load_existing_thumbnails(self):
-        # Load the existing thumbnail information from the JSON file.
         with open(self.thumb_file, 'r') as f:
-            self.thumb_dir_list = {
-                Path(k).resolve(): {
-                    'thumbnail_image': Path(v['thumbnail_image']).resolve() if v['thumbnail_image'] != "None" else None,
-                    'original_image': Path(v['original_image']).resolve() if v['original_image'] != "None" else None
-                } for k, v in json.load(f).items()
-            }
+            self.thumb_dir_list = json.load(f)
 
     def scan_directories(self, base_dir: Path):
         # Scan the specified directory for image files, and create thumbnails if necessary.
@@ -89,35 +84,47 @@ class ThumbnailList:
                 thumb_save_path = self.thumb_dir / f"{sub_dir.name}.jpg"
                 if not thumb_save_path.exists():
                     self.save_resized_thumbnail(original_image, thumb_save_path)
-                thumb_dir_list[sub_dir.resolve()] = {
-                    'thumbnail_image': thumb_save_path.resolve(),
-                    'original_image': original_image.resolve()
+                thumb_dir_list[str(sub_dir.resolve())] = {
+                    'thumbnail_image': str(thumb_save_path.resolve()),
+                    'original_image': str(original_image.resolve())
                 }
             else:
-                thumb_dir_list[sub_dir.resolve()] = {
-                    'thumbnail_image': None,
-                    'original_image': None
+                thumb_dir_list[str(sub_dir.resolve())] = {
+                    'thumbnail_image': "",
+                    'original_image': ""
                 }
 
         return thumb_dir_list
 
     def update_thumbnails(self):
-        # Update the thumbnail list based on the current directory structure.
-        current_thumb_dir_list = self.scan_directories(self.search_dir)
+        current_thumb_dir_list = {}
 
-        # Add new directories
-        for directory, paths in current_thumb_dir_list.items():
-            if directory not in self.thumb_dir_list:
-                print(f"New directory added: {directory.name}")
-                self.thumb_dir_list[directory] = paths
-
-        # Remove deleted directories
         for directory in list(self.thumb_dir_list.keys()):
-            if directory not in current_thumb_dir_list:
-                print(f"Directory removed: {directory.name}")
-                del self.thumb_dir_list[directory]
+            directory_path = Path(directory)
 
-        # Save the updated information
+            if not directory_path.exists() or not directory_path.is_dir():
+                del self.thumb_dir_list[directory]
+            else:
+                current_thumb_dir_list[directory] = self.thumb_dir_list[directory]
+
+        sub_dirs = [f for f in self.search_dir.glob("*") if f.is_dir()]
+
+        for sub_dir in sub_dirs:
+            if str(sub_dir.resolve()) not in self.thumb_dir_list:
+                img_names = [img for ext in self.img_exts for img in sub_dir.rglob(f"*.{ext}")]
+                if img_names:
+                    original_image = img_names[0]
+                    thumb_save_path = self.thumb_dir / f"{sub_dir.name}.jpg"
+                    if not thumb_save_path.exists():
+                        self.save_resized_thumbnail(original_image, thumb_save_path)
+
+                    current_thumb_dir_list[str(sub_dir.resolve())] = {
+                        'thumbnail_image': str(thumb_save_path.resolve()),
+                        'original_image': str(original_image.resolve())
+                    }
+
+        self.thumb_dir_list = current_thumb_dir_list
+
         self.save_thumbnails()
 
     def save_resized_thumbnail(self, image_path: Path, save_path: Path):
@@ -130,22 +137,16 @@ class ThumbnailList:
 
     def save_thumbnails(self):
         # Save the current thumbnail information to the JSON file.
-        save_info = {
-            str(k): {
-                'thumbnail_image': str(v['thumbnail_image']),
-                'original_image': str(v['original_image'])
-            } for k, v in self.thumb_dir_list.items()
-        }
         with open(self.thumb_file, 'w') as f:
-            json.dump(save_info, f, indent=4)
+            json.dump(self.thumb_dir_list, f, indent=4)
 
     def change_thumb(self, change_directory: Path, new_image_path: Path):
         # Change the thumbnail and update both thumbnail and original image paths.
         thumb_save_path = self.thumb_dir / f"{change_directory.name}.jpg"
         self.save_resized_thumbnail(new_image_path, thumb_save_path)
-        self.thumb_dir_list[change_directory.resolve()] = {
-            'thumbnail_image': thumb_save_path.resolve(),
-            'original_image': new_image_path.resolve()
+        self.thumb_dir_list[str(change_directory.resolve())] = {
+            'thumbnail_image': str(thumb_save_path.resolve()),
+            'original_image': str(new_image_path.resolve())
         }
         self.save_thumbnails()
 
@@ -175,7 +176,7 @@ class ClickableThumbnail(ClickableLabel):
     def change_thumbnail(self, new_image_path):
         # Change the thumbnail image and update both thumbnail and original paths
         thumbnail_list.change_thumb(Path(self.directory), Path(new_image_path))
-        new_thumb = thumbnail_list.thumb_dir_list[Path(self.directory).resolve()]["thumbnail_image"]
+        new_thumb = thumbnail_list.thumb_dir_list[str(Path(self.directory).resolve())]["thumbnail_image"]
         self.get_thumbnail(new_thumb)
 
     def get_thumbnail(self, thumbnail_path):
@@ -233,20 +234,27 @@ class ThumbnailViewerApp(QMainWindow):
         self.move(qr.topLeft())
 
     def populate_tree(self):
+        start = time.time()
+        self.tree.setUpdatesEnabled(False)
+
         for directory, thumbnail_data in thumbnail_list.thumb_dir_list.items():
             item = QTreeWidgetItem(self.tree)
             thumbnail_item = ClickableThumbnail(directory)
             thumbnail_item.get_thumbnail(thumbnail_data["thumbnail_image"])
             self.tree.setItemWidget(item, 0, thumbnail_item)
             name_item = ClickableDirName(directory)
-            item.setText(1, directory.name)
+            item.setText(1, Path(directory).name)
             self.tree.setItemWidget(item, 1, name_item)
-            birth_time_str = datetime.fromtimestamp(directory.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
+            birth_time_str = datetime.fromtimestamp(Path(directory).stat().st_mtime).strftime('%Y-%m-%d %H:%M')
             item.setText(2, birth_time_str)
+
+        self.tree.setUpdatesEnabled(True)
+        stop = time.time()
+        print(f"populate_tree: {stop - start } sec")
 
     def show_large_image(self, item, column):
         thumbnail_item = self.tree.itemWidget(item, 0)
-        original_image_path = thumbnail_list.thumb_dir_list[thumbnail_item.directory.resolve()]['original_image']
+        original_image_path = Path(thumbnail_list.thumb_dir_list[str(Path(thumbnail_item.directory).resolve())]['original_image'])
         self.scene.clear()
 
         if original_image_path and original_image_path.exists():
@@ -259,7 +267,7 @@ class ThumbnailViewerApp(QMainWindow):
         for row in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(row)
             name_item = self.tree.itemWidget(item, 1)
-            item.setHidden(search_text not in name_item.directory.name.lower())
+            item.setHidden(search_text not in Path(name_item.directory).name.lower())
         for row in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(row)
             if not item.isHidden():
