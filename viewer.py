@@ -79,7 +79,6 @@ class ThumbnailList:
     def load_existing_thumbnails(self):
         # Load the existing thumbnail information from the JSON file.
         with open(self.thumb_file, 'r') as f:
-            # 기존의 저장 데이터를 thumbnail_image와 original_image로 나눕니다.
             self.thumb_dir_list = {
                 Path(k).resolve(): {
                     'thumbnail_image': Path(v['thumbnail_image']).resolve() if v['thumbnail_image'] != "None" else None,
