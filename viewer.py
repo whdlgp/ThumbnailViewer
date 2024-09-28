@@ -257,7 +257,6 @@ class ThumbnailViewerApp(QMainWindow):
 
     def show_large_image(self, item, column):
         thumbnail_item = self.tree.itemWidget(item, 0)
-        # 원본 이미지를 가져오기 위해 'original_image' 경로 사용
         original_image_path = thumbnail_list.thumb_dir_list[thumbnail_item.directory.resolve()]['original_image']
         self.scene.clear()
 
