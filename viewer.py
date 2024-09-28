@@ -34,15 +34,6 @@ def save_json(file_path, data):
     with open(str(file_path), "w") as json_file:
         json.dump(data, json_file, indent=4)
 
-# resize thumbnail and save it
-def save_resized_thumbnail(image_path, save_path, size):
-    with Image.open(image_path) as img:
-        img.thumbnail((size, size))
-        # RGBA to RGB
-        if img.mode == 'RGBA':
-            img = img.convert('RGB')
-        img.save(save_path, format='JPEG')
-
 # Configuration settings
 config_data = load_config()
 search_dir = Path(config_data.get('search_dir', r"I:\asmr"))
@@ -98,7 +89,6 @@ class ThumbnailList:
                 thumb_save_path = self.thumb_dir / f"{sub_dir.name}.jpg"
                 if not thumb_save_path.exists():
                     self.save_resized_thumbnail(original_image, thumb_save_path)
-                # 썸네일과 원본 이미지 경로 모두 저장
                 thumb_dir_list[sub_dir.resolve()] = {
                     'thumbnail_image': thumb_save_path.resolve(),
                     'original_image': original_image.resolve()
@@ -134,7 +124,7 @@ class ThumbnailList:
         # Resize the image and save it as a JPEG file.
         with Image.open(image_path) as img:
             img.thumbnail((self.thumb_size, self.thumb_size))
-            if img.mode == 'RGBA':
+            if img.mode != 'RGB':
                 img = img.convert('RGB')  # Convert RGBA to RGB since JPEG does not support RGBA
             img.save(save_path, format='JPEG')
 
