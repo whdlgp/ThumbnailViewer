@@ -1,4 +1,5 @@
 # Thumbnail Viewer
+![icon](thumbnailviewer.ico)  
 
 A desktop app for browsing directories with thumbnails.
 
