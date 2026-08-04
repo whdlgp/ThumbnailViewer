@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# uv
+.venv/
+.python-version
+uv.lock
+
+# Project runtime data
+data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# etc.
+data
+config.json

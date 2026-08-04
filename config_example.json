@@ -1,0 +1,17 @@
+{
+  "search_dir": "Y:\\asmr",
+  "img_exts": [
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
+    "bmp"
+  ],
+  "theme": "dark_teal.xml",
+  "default_res": [
+    1280,
+    720
+  ],
+  "thumb_size": 200,
+  "page_size": 10
+}

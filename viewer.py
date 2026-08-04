@@ -1,283 +1,378 @@
 import sys
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QTreeWidget, QTreeWidgetItem, QLabel,
-    QDesktopWidget, QHBoxLayout, QVBoxLayout, QGroupBox,
-    QFileDialog, QMainWindow, QGraphicsScene, QGraphicsView, QLineEdit, QPushButton
-)
-from PyQt5.QtGui import QPixmap
-from PyQt5.QtCore import Qt
-import qdarktheme
-from pathlib import Path
-import subprocess
+import os
 import json
-from PIL import Image
+import subprocess
 from datetime import datetime
-import time
+from enum import Enum
 
-# Thumbnail file directory
-thumb_dir = Path(sys.executable).parent / "thumbnails" if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent / "thumbnails"
-thumb_dir.mkdir(exist_ok=True)
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget
+from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem, QAbstractItemView
+from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
+from PySide6.QtWidgets import QFileDialog, QGraphicsScene, QGraphicsView
+from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt
 
-# Helper function to load configuration
-def load_config():
-    config_file_path = Path(sys.executable).parent / "config.txt" if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent / "config.txt"
-    config_data = {}
-    with open(config_file_path, 'r') as config_file:
-        for line in config_file:
-            if line.startswith('#'):
-                continue
-            key, value = line.strip().split('=')
-            config_data[key] = value
-    return config_data
+from qt_material import apply_stylesheet
 
-# Helper function to save JSON data to a file
-def save_json(file_path, data):
-    with open(str(file_path), "w") as json_file:
-        json.dump(data, json_file, indent=4)
 
-# Configuration settings
-config_data = load_config()
-search_dir = Path(config_data.get('search_dir', r"I:\asmr"))
-img_exts = config_data.get('img_exts', "png,jpg,webp,jpeg").split(',')
-theme = config_data.get('theme', "dark")
-default_res = tuple(map(int, config_data.get('default_res', "1280x720").split('x')))
-thumb_size = int(config_data.get('thumb_size', 200))
+class SortMode(Enum):
+    NAME_ASC = 0
+    NAME_DESC = 1
+    MTIME_NEW = 2
+    MTIME_OLD = 3
 
-# Class to manage the list of thumbnails
-class ThumbnailList:
-    def __init__(self):
-        self.search_dir = search_dir
-        self.thumb_dir = thumb_dir
-        self.thumb_size = thumb_size
-        self.img_exts = img_exts
-        self.thumb_file = thumb_dir / "thumbnails.json"
-        self.thumb_dir_list = {}
 
-        self.thumb_dir.mkdir(exist_ok=True)
+DEFAULT_CONFIG = {
+    "search_dir": r"Y:/asmr",
+    "img_exts": ["png", "jpg", "jpeg", "webp", "bmp"],
+    "theme": "dark_teal.xml",
+    "default_res": [1280, 720],
+    "thumb_size": 200,
+    "page_size": 5,
+}
 
-        self.read_thumb_list()
 
-    def read_thumb_list(self):
-        # Load existing thumbnails if the file exists, otherwise create new ones
-        if self.thumb_file.exists():
-            self.load_existing_thumbnails()
+def load_config(path):
+    config = dict(DEFAULT_CONFIG)
+
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            config.update(json.load(f))
+
+    return config
+
+
+class DirectoryManager:
+    def __init__(self, root, page_size=5, img_exts=None, data_dir=None):
+        self.root = root
+        self.page_size = page_size
+        self.items = []
+        self.filtered_items = []
+
+        exts = img_exts or ["jpg", "jpeg", "png", "bmp", "webp"]
+        self.image_exts = {f".{e.lower().lstrip('.')}" for e in exts}
+
+        self.data_dir = data_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.override_file = os.path.join(self.data_dir, "thumb_overrides.json")
+
+        if os.path.exists(self.override_file):
+            with open(self.override_file, "r", encoding="utf-8") as f:
+                self.overrides = json.load(f)
         else:
-            self.thumb_dir_list = self.scan_directories(self.search_dir)
-            self.save_thumbnails()
+            self.overrides = {}
 
-        # Update to reflect the latest directory state
-        self.update_thumbnails()
+    def set_thumbnail_override(self, directory_path, image_path):
+        key = os.path.relpath(os.path.abspath(directory_path), self.root)
+        value = os.path.relpath(os.path.abspath(image_path), self.root)
+        self.overrides[key] = value
 
-    def load_existing_thumbnails(self):
-        with open(self.thumb_file, 'r') as f:
-            self.thumb_dir_list = json.load(f)
+        with open(self.override_file, "w", encoding="utf-8") as f:
+            json.dump(self.overrides, f, indent=4)
 
-    def scan_directories(self, base_dir: Path):
-        # Scan the specified directory for image files, and create thumbnails if necessary.
-        thumb_dir_list = {}
-        sub_dirs = [f for f in base_dir.glob("*") if f.is_dir()]
+    def read(self):
+        self.items.clear()
 
-        for sub_dir in sub_dirs:
-            img_names = [img for ext in self.img_exts for img in sub_dir.rglob(f"*.{ext}")]
-            if img_names:
-                original_image = img_names[0]
-                thumb_save_path = self.thumb_dir / f"{sub_dir.name}.jpg"
-                if not thumb_save_path.exists():
-                    self.save_resized_thumbnail(original_image, thumb_save_path)
-                thumb_dir_list[str(sub_dir.resolve())] = {
-                    'thumbnail_image': str(thumb_save_path.resolve()),
-                    'original_image': str(original_image.resolve())
-                }
-            else:
-                thumb_dir_list[str(sub_dir.resolve())] = {
-                    'thumbnail_image': "",
-                    'original_image': ""
-                }
+        with os.scandir(self.root) as entries:
+            for entry in entries:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
 
-        return thumb_dir_list
+                stat = entry.stat(follow_symlinks=False)
 
-    def update_thumbnails(self):
-        current_thumb_dir_list = {}
+                self.items.append({
+                    "name": entry.name,
+                    "path": entry.path,
+                    "mtime": stat.st_mtime,
+                })
 
-        for directory in list(self.thumb_dir_list.keys()):
-            directory_path = Path(directory)
+        self.filtered_items = list(self.items)
 
-            if not directory_path.exists() or not directory_path.is_dir():
-                del self.thumb_dir_list[directory]
-            else:
-                current_thumb_dir_list[directory] = self.thumb_dir_list[directory]
+    def sort(self, mode: SortMode):
+        if mode == SortMode.NAME_ASC:
+            self.items.sort(key=lambda x: x["name"].lower())
 
-        sub_dirs = [f for f in self.search_dir.glob("*") if f.is_dir()]
+        elif mode == SortMode.NAME_DESC:
+            self.items.sort(key=lambda x: x["name"].lower(), reverse=True)
 
-        for sub_dir in sub_dirs:
-            if str(sub_dir.resolve()) not in self.thumb_dir_list:
-                img_names = [img for ext in self.img_exts for img in sub_dir.rglob(f"*.{ext}")]
-                if img_names:
-                    original_image = img_names[0]
-                    thumb_save_path = self.thumb_dir / f"{sub_dir.name}.jpg"
-                    if not thumb_save_path.exists():
-                        self.save_resized_thumbnail(original_image, thumb_save_path)
+        elif mode == SortMode.MTIME_NEW:
+            self.items.sort(key=lambda x: x["mtime"], reverse=True)
 
-                    current_thumb_dir_list[str(sub_dir.resolve())] = {
-                        'thumbnail_image': str(thumb_save_path.resolve()),
-                        'original_image': str(original_image.resolve())
-                    }
+        elif mode == SortMode.MTIME_OLD:
+            self.items.sort(key=lambda x: x["mtime"])
 
-        self.thumb_dir_list = current_thumb_dir_list
+    def filter(self, query):
+        query = (query or "").lower().strip()
 
-        self.save_thumbnails()
+        if not query:
+            self.filtered_items = list(self.items)
+        else:
+            self.filtered_items = [i for i in self.items if query in i["name"].lower()]
 
-    def save_resized_thumbnail(self, image_path: Path, save_path: Path):
-        # Resize the image and save it as a JPEG file.
-        with Image.open(image_path) as img:
-            img.thumbnail((self.thumb_size, self.thumb_size))
-            if img.mode != 'RGB':
-                img = img.convert('RGB')  # Convert RGBA to RGB since JPEG does not support RGBA
-            img.save(save_path, format='JPEG')
+    def page_count(self):
+        if not self.filtered_items:
+            return 1
+        return max(1, (len(self.filtered_items) + self.page_size - 1) // self.page_size)
 
-    def save_thumbnails(self):
-        # Save the current thumbnail information to the JSON file.
-        with open(self.thumb_file, 'w') as f:
-            json.dump(self.thumb_dir_list, f, indent=4)
+    def get_page(self, page):
+        start = page * self.page_size
+        end = start + self.page_size
+        return self.filtered_items[start:end]
 
-    def change_thumb(self, change_directory: Path, new_image_path: Path):
-        # Change the thumbnail and update both thumbnail and original image paths.
-        thumb_save_path = self.thumb_dir / f"{change_directory.name}.jpg"
-        self.save_resized_thumbnail(new_image_path, thumb_save_path)
-        self.thumb_dir_list[str(change_directory.resolve())] = {
-            'thumbnail_image': str(thumb_save_path.resolve()),
-            'original_image': str(new_image_path.resolve())
-        }
-        self.save_thumbnails()
+    def find_thumbnail(self, directory):
+        key = os.path.relpath(os.path.abspath(directory), self.root)
+        override = self.overrides.get(key)
 
-# Global thumbnail list instance
-thumbnail_list = ThumbnailList()
+        if override:
+            override_path = os.path.join(self.root, override)
+            if os.path.exists(override_path):
+                return override_path
 
-# Clickable Thumbnail Image class for handling double-click events
-class ClickableLabel(QLabel):
-    def __init__(self, directory=None, parent=None):
+        for current_root, _, files in os.walk(directory):
+            for name in files:
+                _, ext = os.path.splitext(name)
+
+                if ext.lower() in self.image_exts:
+                    return os.path.join(current_root, name)
+
+        return None
+
+    def get_page_thumbnails(self, page):
+        result = []
+
+        for item in self.get_page(page):
+            result.append({
+                "directory": item,
+                "thumbnail": self.find_thumbnail(item["path"]),
+            })
+
+        return result
+
+
+class ClickableThumbnail(QLabel):
+    def __init__(self, directory_path, manager, thumb_size, parent=None):
         super().__init__(parent)
-        self.directory = directory
+        self.directory_path = directory_path
+        self.manager = manager
+        self.thumb_size = thumb_size
+        self.setFixedSize(thumb_size, thumb_size)
+        self.setAlignment(Qt.AlignCenter)
 
-class ClickableDirName(ClickableLabel):
-    def mouseDoubleClickEvent(self, event):
-        subprocess.Popen(["explorer", str(self.directory)])
+    def set_pixmap_from_path(self, image_path):
+        if image_path and os.path.exists(image_path):
+            pixmap = QPixmap(image_path)
+            pixmap = pixmap.scaled(
+                self.thumb_size, self.thumb_size,
+                Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+        else:
+            pixmap = QPixmap(self.thumb_size, self.thumb_size)
+            pixmap.fill(Qt.transparent)
 
-class ClickableThumbnail(ClickableLabel):
-    def mouseDoubleClickEvent(self, event):
-        file_dialog = QFileDialog()
-        file_dialog.setFileMode(QFileDialog.ExistingFile)
-        file_dialog.setNameFilter("Images (*.png *.jpg *.webp *.jpeg);;All Files (*)")
-        if self.directory:
-            file_dialog.setDirectory(str(self.directory))
-        if file_dialog.exec_():
-            self.change_thumbnail(file_dialog.selectedFiles()[0])
-
-    def change_thumbnail(self, new_image_path):
-        # Change the thumbnail image and update both thumbnail and original paths
-        thumbnail_list.change_thumb(Path(self.directory), Path(new_image_path))
-        new_thumb = thumbnail_list.thumb_dir_list[str(Path(self.directory).resolve())]["thumbnail_image"]
-        self.get_thumbnail(new_thumb)
-
-    def get_thumbnail(self, thumbnail_path):
-        pixmap = QPixmap(str(thumbnail_path)) if thumbnail_path else QPixmap(thumb_size, thumb_size)
         self.setPixmap(pixmap)
-        return pixmap
 
-# Main application window
+    def mouseDoubleClickEvent(self, event):
+        file_dialog = QFileDialog(self)
+        file_dialog.setFileMode(QFileDialog.ExistingFile)
+        file_dialog.setNameFilter("Images (*.png *.jpg *.jpeg *.webp *.bmp);;All Files (*)")
+        file_dialog.setDirectory(self.directory_path)
+
+        if file_dialog.exec():
+            selected = file_dialog.selectedFiles()
+
+            if selected:
+                new_path = selected[0]
+                self.manager.set_thumbnail_override(self.directory_path, new_path)
+                self.set_pixmap_from_path(new_path)
+
+
+class ClickableDirName(QLabel):
+    def __init__(self, directory_path, parent=None):
+        super().__init__(parent)
+        self.directory_path = directory_path
+
+    def mouseDoubleClickEvent(self, event):
+        subprocess.Popen(["explorer", self.directory_path])
+
+
 class ThumbnailViewerApp(QMainWindow):
-    def __init__(self):
+    def __init__(self, manager: DirectoryManager, thumb_size, default_res):
         super().__init__()
+        self.manager = manager
+        self.thumb_size = thumb_size
+        self.default_res = default_res
+        self.current_page = 0
+        self.name_sort_desc = False
+        self.mtime_sort_new = True
+
+        self.manager.read()
+        self.manager.sort(SortMode.MTIME_NEW)
+        self.manager.filter("")
+
         self.init_ui()
+        self.refresh_tree()
 
     def init_ui(self):
-        self.setWindowTitle('Thumbnail Viewer')
+        self.setWindowTitle("Thumbnail Viewer")
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
 
         layout = QVBoxLayout(self.central_widget)
+
         self.search_widget = QLineEdit(self.central_widget)
         self.search_widget.setPlaceholderText("Search...")
-        self.search_widget.textChanged.connect(self.search_items)
+        self.search_widget.textChanged.connect(self.on_search_changed)
         layout.addWidget(self.search_widget)
 
-        groupBox = QGroupBox("Thumbs and Names")
-        layout.addWidget(groupBox)
+        thumb_name_container = QWidget(self.central_widget)
+        layout.addWidget(thumb_name_container)
 
-        thumb_name_layout = QHBoxLayout()
-        groupBox.setLayout(thumb_name_layout)
+        thumb_name_layout = QHBoxLayout(thumb_name_container)
+        thumb_name_layout.setContentsMargins(0, 0, 0, 0)
 
         self.tree = QTreeWidget(self.central_widget)
         self.tree.setHeaderLabels(["Thumbnail", "Name", "modified"])
-        self.tree.setColumnWidth(0, thumb_size + 50)
-        self.tree.setColumnWidth(1, thumb_size + 50)
-        self.tree.setSortingEnabled(True)
-        self.tree.sortItems(2, Qt.DescendingOrder)
-
-        self.populate_tree()
-
-        self.image_label = QLabel(self.central_widget)
-        self.image_label.setAlignment(Qt.AlignTop)
+        self.tree.setColumnWidth(0, self.thumb_size + 50)
+        self.tree.setColumnWidth(1, self.thumb_size + 50)
+        self.tree.setSortingEnabled(False)
+        self.tree.header().setSectionsClickable(True)
+        self.tree.header().sectionClicked.connect(self.on_header_clicked)
+        self.tree.itemClicked.connect(self.on_item_clicked)
+        self.tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.tree.verticalScrollBar().setSingleStep(15)
 
         self.scene = QGraphicsScene()
         self.view = QGraphicsView(self.scene)
+
         thumb_name_layout.addWidget(self.tree)
-        thumb_name_layout.addWidget(self.image_label)
         thumb_name_layout.addWidget(self.view)
 
-        self.tree.itemClicked.connect(self.show_large_image)
+        pagination_layout = QHBoxLayout()
+        self.prev_button = QPushButton("< Prev")
+        self.next_button = QPushButton("Next >")
+        self.page_label = QLabel()
+        self.page_label.setAlignment(Qt.AlignCenter)
 
-        self.resize(default_res[0], default_res[1])
-        qr = self.frameGeometry()
-        cp = QDesktopWidget().availableGeometry().center()
-        qr.moveCenter(cp)
-        self.move(qr.topLeft())
+        self.prev_button.clicked.connect(self.on_prev_page)
+        self.next_button.clicked.connect(self.on_next_page)
 
-    def populate_tree(self):
-        start = time.time()
+        pagination_layout.addWidget(self.prev_button)
+        pagination_layout.addWidget(self.page_label)
+        pagination_layout.addWidget(self.next_button)
+        layout.addLayout(pagination_layout)
+
+        self.resize(*self.default_res)
+        screen_geometry = QApplication.primaryScreen().availableGeometry()
+        x = (screen_geometry.width() - self.width()) // 2
+        y = (screen_geometry.height() - self.height()) // 2
+        self.move(x, y)
+
+    def refresh_tree(self):
         self.tree.setUpdatesEnabled(False)
+        self.tree.clear()
 
-        for directory, thumbnail_data in thumbnail_list.thumb_dir_list.items():
+        for entry in self.manager.get_page_thumbnails(self.current_page):
+            directory = entry["directory"]
+            thumbnail_path = entry["thumbnail"]
+
             item = QTreeWidgetItem(self.tree)
-            thumbnail_item = ClickableThumbnail(directory)
-            thumbnail_item.get_thumbnail(thumbnail_data["thumbnail_image"])
-            self.tree.setItemWidget(item, 0, thumbnail_item)
-            name_item = ClickableDirName(directory)
-            item.setText(1, Path(directory).name)
-            self.tree.setItemWidget(item, 1, name_item)
-            birth_time_str = datetime.fromtimestamp(Path(directory).stat().st_mtime).strftime('%Y-%m-%d %H:%M')
-            item.setText(2, birth_time_str)
+            item.setData(0, Qt.UserRole, directory["path"])
+
+            thumb_widget = ClickableThumbnail(directory["path"], self.manager, self.thumb_size)
+            thumb_widget.set_pixmap_from_path(thumbnail_path)
+            self.tree.setItemWidget(item, 0, thumb_widget)
+
+            name_widget = ClickableDirName(directory["path"])
+            name_widget.setText(directory["name"])
+            self.tree.setItemWidget(item, 1, name_widget)
+
+            modified_str = datetime.fromtimestamp(directory["mtime"]).strftime("%Y-%m-%d %H:%M")
+            item.setText(2, modified_str)
 
         self.tree.setUpdatesEnabled(True)
-        stop = time.time()
-        print(f"populate_tree: {stop - start } sec")
+        self.update_pagination_label()
 
-    def show_large_image(self, item, column):
-        thumbnail_item = self.tree.itemWidget(item, 0)
-        original_image_path = Path(thumbnail_list.thumb_dir_list[str(Path(thumbnail_item.directory).resolve())]['original_image'])
+    def update_pagination_label(self):
+        total_pages = self.manager.page_count()
+        total_items = len(self.manager.filtered_items)
+
+        start = self.current_page * self.manager.page_size + 1
+        end = min(start + self.manager.page_size - 1, total_items)
+
+        if total_items == 0:
+            start, end = 0, 0
+
+        self.page_label.setText(
+            f"Page {self.current_page + 1} / {total_pages}   ({start}-{end} / {total_items})"
+        )
+        self.prev_button.setEnabled(self.current_page > 0)
+        self.next_button.setEnabled(self.current_page < total_pages - 1)
+
+    def on_prev_page(self):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.refresh_tree()
+
+    def on_next_page(self):
+        if self.current_page < self.manager.page_count() - 1:
+            self.current_page += 1
+            self.refresh_tree()
+
+    def on_search_changed(self, text):
+        self.manager.filter(text)
+        self.current_page = 0
+        self.refresh_tree()
+
+    def on_header_clicked(self, column):
+        if column == 1:
+            self.name_sort_desc = not self.name_sort_desc
+            mode = SortMode.NAME_DESC if self.name_sort_desc else SortMode.NAME_ASC
+        elif column == 2:
+            self.mtime_sort_new = not self.mtime_sort_new
+            mode = SortMode.MTIME_NEW if self.mtime_sort_new else SortMode.MTIME_OLD
+        else:
+            return
+
+        self.manager.sort(mode)
+        self.manager.filter(self.search_widget.text())
+        self.current_page = 0
+        self.refresh_tree()
+
+    def on_item_clicked(self, item, column):
+        directory_path = item.data(0, Qt.UserRole)
+        thumbnail_path = self.manager.find_thumbnail(directory_path)
         self.scene.clear()
 
-        if original_image_path and original_image_path.exists():
-            pixmap = QPixmap(str(original_image_path))
-            self.scene.addPixmap(pixmap.scaled(self.view.size(), Qt.KeepAspectRatio))
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            pixmap = QPixmap(thumbnail_path)
+            self.scene.addPixmap(
+                pixmap.scaled(self.view.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
             self.view.setScene(self.scene)
 
-    def search_items(self):
-        search_text = self.search_widget.text().lower()
-        for row in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(row)
-            name_item = self.tree.itemWidget(item, 1)
-            item.setHidden(search_text not in Path(name_item.directory).name.lower())
-        for row in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(row)
-            if not item.isHidden():
-                self.tree.scrollToItem(item)
-                break
 
-# Entry point for the application
-if __name__ == '__main__':
+def main():
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    config = load_config(config_path)
+
     app = QApplication(sys.argv)
-    qdarktheme.setup_theme(theme)
-    ex = ThumbnailViewerApp()
-    ex.show()
-    sys.exit(app.exec_())
+    apply_stylesheet(app, theme=config.get("theme", "dark_teal.xml"))
+
+    manager = DirectoryManager(
+        root=config.get("search_dir", r"Y:\asmr"),
+        page_size=int(config.get("page_size", 5)),
+        img_exts=config.get("img_exts"),
+    )
+
+    window = ThumbnailViewerApp(
+        manager=manager,
+        thumb_size=int(config.get("thumb_size", 200)),
+        default_res=tuple(config.get("default_res", [1280, 720])),
+    )
+    window.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
